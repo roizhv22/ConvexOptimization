@@ -14,7 +14,7 @@ def solveGD(A: np.ndarray) -> np.ndarray:
         return np.dot(ai.T, np.dot(inv_X, ai)) - 1
 
     def optimize(X0, ai_values):
-        max_iter = 100
+        max_iter = 10
         epsilon = 1e-3
         alpha = 0.1
         beta = 0.5
@@ -23,6 +23,7 @@ def solveGD(A: np.ndarray) -> np.ndarray:
         t = 1.0
 
         for i in range(max_iter):
+            print(i)
             inv_X = np.linalg.inv(X)
             grad = inv_X - np.sum(
                 [np.outer(ai, ai) / np.dot(ai, np.dot(inv_X, ai)) for ai in
@@ -43,7 +44,7 @@ def solveGD(A: np.ndarray) -> np.ndarray:
                         X = X_new
                         print("found better objective")
                         break
-                t *= beta
+                t = max(t * beta, 2.22e-10)
 
         return X
 
@@ -55,7 +56,7 @@ def solveGD(A: np.ndarray) -> np.ndarray:
     return X_optimal
 
 
-def solveProjected(A):
+def solveProject(A):
     n = A.shape[0]  # Dimension of X
     m = A.shape[1]  # Number of constraints
 
@@ -66,19 +67,15 @@ def solveProjected(A):
         inv_X = np.linalg.inv(X)
         return np.dot(ai.T, np.dot(inv_X, ai)) - 1
 
-    def barrier_term(X, t, ai_values):
-        barrier = 0
-        for ai in ai_values:
-            barrier -= np.log(constraint(X, ai))
-        return t * barrier
-
-    def barrier_gradient(X, t, ai_values):
-        gradient = np.zeros((n, n))
+    def project(X, ai_values):
         for ai in ai_values:
             inv_X = np.linalg.inv(X)
-            outer_product = np.outer(ai, ai)
-            gradient += inv_X @ outer_product @ inv_X
-        return -t * gradient
+            norm_ai = np.linalg.norm(ai)
+            if norm_ai > np.sqrt(2):
+                ai /= (2 * norm_ai / np.sqrt(2))
+            ai_outer = np.outer(ai, ai)
+            X = X - np.dot(X, np.dot(ai_outer, X)) / (1 + np.dot(ai, np.dot(inv_X, ai)))
+        return X
 
     # Construct ai_values from input matrix A
     ai_values = [A[:, i] for i in range(m)]
@@ -86,44 +83,42 @@ def solveProjected(A):
 
     max_iter = 100
     epsilon = 1e-3
-    t = 1.0
+    initial_step_size = 0.1  # Initial step size
+    reduction_factor = 0.2  # Step size reduction factor
+
+    step_size = initial_step_size
 
     for i in range(max_iter):
-        objective_value = objective(X) + barrier_term(X, t, ai_values)
-        gradient = np.linalg.inv(X) - barrier_gradient(X, t, ai_values)
-        norm_gradient = np.linalg.norm(gradient)
-
-        if norm_gradient < epsilon:
+        inv_X = np.linalg.inv(X)
+        grad = inv_X - np.sum([np.outer(ai, ai) / np.dot(ai, np.dot(inv_X, ai)) for ai in ai_values], axis=0)
+        X_new = X + step_size * grad
+        X_new = project(X_new, ai_values)
+        if np.linalg.norm(X_new - X) < epsilon:
             break
-
-        step_size = 0.1 / norm_gradient
-        X_new = X - step_size * gradient
-
-        # Project onto the positive definite cone
-        eigenvalues, eigenvectors = np.linalg.eig(X_new)
-        X_new = eigenvectors @ np.diag(
-            np.maximum(eigenvalues, 1e-8)) @ eigenvectors.T
-
-        # Adjust t using a backtracking line search
-        while objective(X_new) + barrier_term(X_new, t,
-                                              ai_values) > objective_value:
-            step_size *= 0.5
-            X_new = X - step_size * gradient
-            eigenvalues, eigenvectors = np.linalg.eig(X_new)
-            X_new = eigenvectors @ np.diag(
-                np.maximum(eigenvalues, 1e-8)) @ eigenvectors.T
-
         X = X_new
-        t *= 0.9
+        step_size *= reduction_factor  # Reduce the step size
 
     return X
 
 
+def score(X, A):
+    A_reshaped = np.reshape(A, (-1, A.shape[1], 1))
+    scores = np.einsum('...i,ij,...j->...', A_reshaped, X, A_reshaped)
+    return np.linalg.det(X), np.mean(
+        scores <= 1. + 1e-8)
+
+
+
 if __name__ == "__main__":
     started = dt.datetime.now()
-    A = np.load("Examples/wave.50.4.npy")
+    # A = np.load("Examples/gaussian.2.5.npy")
+    n, d = 100, 3
+    np.random.seed(0)
+    A = np.random.randn(n, d) * (np.arange(d) + 1.)
     print(f"started solving at {started}")
-    res = solveGD(A)
-    np.save("results/wave.50.4.npy", A)
+    res = solveProject(A)
+    # res = solve(A)
+    # with open("Results/gaussian.2.5.npy", 'wb') as f:
+    #     np.save(f, A)
     print(f"Done, time took:{dt.datetime.now() - started}")
-
+    print(score(res, A))
