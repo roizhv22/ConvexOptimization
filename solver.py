@@ -126,3 +126,4 @@ if __name__ == "__main__":
     res = solveGD(A)
     np.save("results/wave.50.4.npy", A)
     print(f"Done, time took:{dt.datetime.now() - started}")
+
