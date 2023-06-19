@@ -1,11 +1,13 @@
 import os
+from typing import List
+
 import numpy as np
 import cvxpy as cp
 import tqdm as tqdm
 
 EPSILON = np.finfo(float).eps * 1e-5
 MAX_ITERATION = 20000
-K = 1000
+K = 500
 STEP_SIZE = 0.1
 
 
@@ -17,7 +19,8 @@ def constraint(X: np.ndarray, a: np.ndarray) -> np.ndarray:
     return np.einsum('...i,ij,...j->...', a, X, a) - 1
 
 
-def dijkstra(X: np.ndarray, functionals: np.ndarray, epsilon=1e-2, max_iter=10)\
+def dijkstra(X: np.ndarray, functionals: List[np.ndarray],
+             epsilon=1e-2, max_iter=100) \
         -> np.ndarray:
     """
     implementation of Dijkstra projection algorithm to project into different
@@ -31,11 +34,10 @@ def dijkstra(X: np.ndarray, functionals: np.ndarray, epsilon=1e-2, max_iter=10)\
     :return:
     """
     p = [np.zeros_like(X) for _ in functionals]
+    projected_X = project_to_psd(X)
+    x_old = projected_X.copy()
 
     for _ in range(max_iter):
-        projected_X = project_to_psd(X)
-        x_old = projected_X.copy()
-
         for i, f in enumerate(functionals):
             y = project_on_constraint(projected_X + p[i], f)
             p[i] = (projected_X + p[i]) - y
@@ -61,20 +63,21 @@ def project_to_psd(X: np.ndarray) -> np.ndarray:
     return projected_X
 
 
-def project_on_constraint(X:np.ndarray, functional:np.ndarray) -> np.ndarray:
+def project_on_constraint(X: np.ndarray, functional: np.ndarray) -> np.ndarray:
     """
     project on the half space defined by each constraints
     :param X: solution
     :param functional: created by the constraint
     :return: projection
     """
-    # Compute eigenvalue decomposition of X
-    val = np.trace(np.dot(functional, X))
-    if val > 1.0:
-        X -= ((val - 1) /
-              np.linalg.norm(functional, ord='fro') ** 2) * functional
+    new_X = X
 
-    return X
+    val = np.sum(functional * new_X)
+    if val > 1.0 - EPSILON:
+        new_X -= ((val - 1) /
+                  np.linalg.norm(functional, ord='fro') ** 2) * functional
+
+    return new_X
 
 
 def diagonal_outer_product(a: np.ndarray) -> np.ndarray:
@@ -83,9 +86,7 @@ def diagonal_outer_product(a: np.ndarray) -> np.ndarray:
     :param a: a vector from the constraint matrix
     :return: matrix represents the functional
     """
-    outer_product = np.outer(a, a)
-    diagonal_matrix = np.diag(np.diag(outer_product))
-    return diagonal_matrix
+    return np.outer(a, a)
 
 
 def Solve(A: np.ndarray) -> np.ndarray:
@@ -103,7 +104,7 @@ def Solve(A: np.ndarray) -> np.ndarray:
 
     for i in tqdm.tqdm(range(MAX_ITERATION)):
         # GD step
-        grad = - np.linalg.inv(X)
+        grad = - np.linalg.pinv(X)
         X -= STEP_SIZE * grad
         new_X = (X + X.T) / 2  # enforce symmetry
 
@@ -112,13 +113,18 @@ def Solve(A: np.ndarray) -> np.ndarray:
             # to improve performances
             new_X = dijkstra(new_X, functionals)
 
-        # stopping point
-        if np.all(constraint(X, A) <= 0) and (
-                np.linalg.norm(new_X - X) < EPSILON
-                or np.linalg.norm(objective(X) - objective(new_X)) < EPSILON):
-            break
+            if np.all(constraint(X, A) <= 0) and (
+                    np.linalg.norm(new_X - X) < EPSILON
+                    or np.linalg.norm(
+                objective(X) - objective(new_X)) < EPSILON):
+                break
+        else:
+            new_X = project_to_psd(X)
 
         X = new_X
+
+    for f in functionals:
+        project_on_constraint(X, f)
 
     # normalize solution to the primal problem
     return np.linalg.inv(X)
@@ -143,12 +149,11 @@ def Libsolve(A):
     # fixing the result and projection
     X = R.value.T @ R.value
     X /= np.max(np.einsum('...i,ij,...j->...', A, X, A))
-
-    return X
+    return np.linalg.inv(X)
 
 
 def score(X, A):
-    scores = np.einsum('...i,ij,...j->...', A, X, A)
+    scores = np.einsum('...i,ij,...j->...', A, np.linalg.inv(X), A)
     return (np.linalg.det(X)), np.mean(
         scores <= 1. + 1e-8)  # industrial solvers always miss
 
